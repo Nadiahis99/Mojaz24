@@ -1,382 +1,538 @@
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>مُوجز 24 | إدارة الأخبار</title>
-  <meta name="description" content="إدارة أخبار موجز 24 محلياً عبر المتصفح فقط">
-  <script src="admin-guard.js"></script>
-  <script>
-    (function () {
-      try {
-        var theme = localStorage.getItem('mojaz24-theme') || 'light';
-        var fontScale = parseFloat(localStorage.getItem('mojaz24-font') || '1');
-        var root = document.documentElement;
-        root.setAttribute('data-theme', theme);
-        root.style.colorScheme = theme === 'dark' ? 'dark' : 'light';
-        if (!Number.isNaN(fontScale)) {
-          root.style.fontSize = (Math.max(0.85, Math.min(1.3, fontScale)) * 16) + 'px';
+/**
+ * مُوجز 24 — Admin News Builder
+ * ✅ الإصلاحات:
+ * 1. الصور / الفيديو / الصوت تُرفع عبر Cloudinary بدلاً من Base64
+ * 2. استخدام getNewsId() بشكل موحّد في كل مكان
+ * 3. زر "عرض" في قائمة الأخبار يفتح المقال الصحيح
+ */
+
+(function () {
+  /* ---- Elements ---- */
+  const form          = document.getElementById('adminNewsForm');
+  const titleInput    = document.getElementById('newsTitle');
+  const contentInput  = document.getElementById('newsContent');
+  const categoryInput = document.getElementById('newsCategory');
+  const imageInput    = document.getElementById('newsImage');
+  const videoInput    = document.getElementById('newsVideo');
+  const editIdInput   = document.getElementById('editNewsId');
+  const submitBtn     = document.getElementById('submitBtn');
+  const cancelBtn     = document.getElementById('cancelEditBtn');
+  const formTitleEl   = document.getElementById('formTitle');
+  const newsFeed      = document.getElementById('adminNewsFeed');
+  const newsCountEl   = document.getElementById('newsCount');
+  const statTotal     = document.getElementById('statTotal');
+  const statCatCards  = document.getElementById('statCatCards');
+  const filterSelect  = document.getElementById('filterCategory');
+  const imagePreview  = document.getElementById('imagePreview');
+  const imageFileName = document.getElementById('imageFileName');
+
+  const contentImageInput    = document.getElementById('newsContentImage');
+  const contentImagePreview  = document.getElementById('contentImagePreview');
+  const contentImageFileName = document.getElementById('contentImageFileName');
+
+  const videoFileInput        = document.getElementById('newsVideoFile');
+  const videoFilePreview      = document.getElementById('videoFilePreview');
+  const videoFileNameEl       = document.getElementById('videoFileName');
+  const startRecordBtn        = document.getElementById('startRecordBtn');
+  const stopRecordBtn         = document.getElementById('stopRecordBtn');
+  const recordTimerEl         = document.getElementById('recordTimer');
+  const recordPreviewEl       = document.getElementById('recordPreview');
+  const recordedVideoPreview  = document.getElementById('recordedVideoPreview');
+  const clearRecordBtn        = document.getElementById('clearRecordBtn');
+
+  const audioFileInput    = document.getElementById('newsAudioFile');
+  const audioFileNameEl   = document.getElementById('audioFileName');
+  const audioFilePreview  = document.getElementById('audioFilePreview');
+
+  // URLs من Cloudinary (نخزّن الـ URL فقط، لا base64)
+  let currentImageUrl        = '';
+  let currentContentImageUrl = '';
+  let currentVideoFileUrl    = '';
+  let currentAudioFileUrl    = '';
+
+  // Recording state
+  let mediaRecorder        = null;
+  let activeRecordStream   = null;
+  let recordedChunks       = [];
+  let recordTimerInterval  = null;
+  let recordSeconds        = 0;
+  let suppressRecordSave   = false;
+
+  /* ---- Helper: get news ID ---- */
+  function getNewsId(news) {
+    return news?._id || news?.id || '';
+  }
+
+  /* ---- Helper: escape HTML ---- */
+  function esc(str) {
+    const d = document.createElement('div');
+    d.textContent = str || '';
+    return d.innerHTML;
+  }
+
+  /* ---- Helper: show upload spinner ---- */
+  function setUploading(label, isUploading) {
+    if (!label) return;
+    label.textContent = isUploading ? '⏳ جارٍ الرفع...' : label.dataset.original || '';
+  }
+
+  /* ============================================================
+     IMAGE UPLOAD — رفع صورة الغلاف
+  ============================================================ */
+  imageInput?.addEventListener('change', async () => {
+    const file = imageInput.files[0];
+    if (!file) return;
+
+    if (imageFileName) {
+      imageFileName.dataset.original = file.name;
+      setUploading(imageFileName, true);
+    }
+
+    try {
+      const url = await uploadImage(file);
+      currentImageUrl = url;
+      if (imagePreview) {
+        imagePreview.innerHTML = `<img src="${url}" alt="preview">`;
+        imagePreview.style.display = 'block';
+      }
+      if (imageFileName) imageFileName.textContent = '✅ ' + file.name;
+    } catch (err) {
+      showToast('⚠️ فشل رفع الصورة: ' + err.message);
+      if (imageFileName) imageFileName.textContent = 'فشل الرفع';
+    }
+  });
+
+  /* ============================================================
+     CONTENT IMAGE UPLOAD — رفع صورة المحتوى
+  ============================================================ */
+  contentImageInput?.addEventListener('change', async () => {
+    const file = contentImageInput.files[0];
+    if (!file) return;
+
+    if (contentImageFileName) {
+      contentImageFileName.dataset.original = file.name;
+      setUploading(contentImageFileName, true);
+    }
+
+    try {
+      const url = await uploadImage(file);
+      currentContentImageUrl = url;
+      if (contentImagePreview) {
+        contentImagePreview.innerHTML = `<img src="${url}" alt="preview" style="width:100%;max-height:160px;object-fit:cover;border-radius:var(--radius);">`;
+        contentImagePreview.style.display = 'block';
+      }
+      if (contentImageFileName) contentImageFileName.textContent = '✅ ' + file.name;
+    } catch (err) {
+      showToast('⚠️ فشل رفع صورة المحتوى: ' + err.message);
+      if (contentImageFileName) contentImageFileName.textContent = 'فشل الرفع';
+    }
+  });
+
+  /* ============================================================
+     VIDEO FILE UPLOAD — رفع ملف فيديو
+  ============================================================ */
+  videoFileInput?.addEventListener('change', async () => {
+    const file = videoFileInput.files[0];
+    if (!file) return;
+
+    clearRecording({ preserveVideoData: true });
+
+    if (videoFileNameEl) {
+      videoFileNameEl.dataset.original = file.name;
+      setUploading(videoFileNameEl, true);
+    }
+
+    try {
+      const url = await uploadVideo(file);
+      currentVideoFileUrl = url;
+      if (videoFilePreview) {
+        videoFilePreview.innerHTML = `<video src="${url}" controls style="width:100%;max-height:180px;border-radius:var(--radius);background:#000;"></video>`;
+        videoFilePreview.style.display = 'block';
+      }
+      if (videoFileNameEl) videoFileNameEl.textContent = '✅ ' + file.name;
+    } catch (err) {
+      showToast('⚠️ فشل رفع الفيديو: ' + err.message);
+      if (videoFileNameEl) videoFileNameEl.textContent = 'فشل الرفع';
+    }
+  });
+
+  /* ============================================================
+     AUDIO FILE UPLOAD — رفع ملف صوتي
+  ============================================================ */
+  audioFileInput?.addEventListener('change', async () => {
+    const file = audioFileInput.files[0];
+    if (!file) return;
+
+    if (audioFileNameEl) {
+      audioFileNameEl.dataset.original = file.name;
+      setUploading(audioFileNameEl, true);
+    }
+
+    try {
+      const url = await uploadAudio(file);
+      currentAudioFileUrl = url;
+      if (audioFilePreview) {
+        audioFilePreview.innerHTML = `
+          <audio controls style="width:100%;margin-top:8px;border-radius:8px;">
+            <source src="${url}" type="${file.type}">
+          </audio>
+          <p style="font-size:12px;color:var(--text-muted,#888);margin:4px 0 0;">
+            ${esc(file.name)} — ${(file.size / 1024).toFixed(0)} KB
+          </p>`;
+        audioFilePreview.style.display = 'block';
+      }
+      if (audioFileNameEl) audioFileNameEl.textContent = '✅ ' + file.name;
+    } catch (err) {
+      showToast('⚠️ فشل رفع الصوت: ' + err.message);
+      if (audioFileNameEl) audioFileNameEl.textContent = 'فشل الرفع';
+    }
+  });
+
+  /* ============================================================
+     VIDEO RECORDING — تسجيل الكاميرا
+  ============================================================ */
+  startRecordBtn?.addEventListener('click', async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      activeRecordStream = stream;
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        activeRecordStream = null;
+        if (suppressRecordSave) { suppressRecordSave = false; return; }
+
+        stopRecordTimer();
+        if (startRecordBtn) startRecordBtn.style.display = 'inline-flex';
+        if (stopRecordBtn)  stopRecordBtn.style.display  = 'none';
+        if (recordPreviewEl) recordPreviewEl.style.display = 'none';
+
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const localUrl = URL.createObjectURL(blob);
+
+        if (recordedVideoPreview) { recordedVideoPreview.src = localUrl; recordedVideoPreview.style.display = 'block'; }
+        if (clearRecordBtn) clearRecordBtn.style.display = 'inline-flex';
+
+        // رفع التسجيل لـ Cloudinary
+        showToast('⏳ جارٍ رفع التسجيل...');
+        try {
+          const file = new File([blob], 'recording.webm', { type: 'video/webm' });
+          const url = await uploadVideo(file);
+          currentVideoFileUrl = url;
+          if (videoFilePreview) {
+            videoFilePreview.innerHTML = `<video src="${url}" controls style="width:100%;max-height:180px;border-radius:var(--radius);background:#000;"></video>`;
+            videoFilePreview.style.display = 'block';
+          }
+          showToast('✅ تم رفع التسجيل');
+        } catch (err) {
+          showToast('⚠️ فشل رفع التسجيل: ' + err.message);
         }
-      } catch (e) {}
-    })();
-  </script>
-  <style>
-    html[data-theme="dark"],
-    html[data-theme="dark"] body {
-      background-color: #0d1117;
-      color: #e6edf3;
+
+        if (videoFileInput) { videoFileInput.value = ''; if (videoFileNameEl) videoFileNameEl.textContent = 'اختر ملف فيديو...'; }
+      };
+
+      if (recordPreviewEl) { recordPreviewEl.srcObject = stream; recordPreviewEl.style.display = 'block'; }
+      mediaRecorder.start();
+      startRecordTimer();
+      if (startRecordBtn) startRecordBtn.style.display = 'none';
+      if (stopRecordBtn)  stopRecordBtn.style.display  = 'inline-flex';
+      if (recordTimerEl)  recordTimerEl.style.display  = 'inline-flex';
+    } catch (err) {
+      showToast('⚠️ تعذّر الوصول إلى الكاميرا');
+    }
+  });
+
+  stopRecordBtn?.addEventListener('click', () => {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  });
+
+  clearRecordBtn?.addEventListener('click', () => clearRecording());
+
+  function startRecordTimer() {
+    recordSeconds = 0;
+    if (recordTimerEl) recordTimerEl.style.display = 'inline-flex';
+    recordTimerInterval = setInterval(() => {
+      recordSeconds++;
+      const m = String(Math.floor(recordSeconds / 60)).padStart(2, '0');
+      const s = String(recordSeconds % 60).padStart(2, '0');
+      if (recordTimerEl) recordTimerEl.textContent = `${m}:${s}`;
+    }, 1000);
+  }
+
+  function stopRecordTimer() {
+    clearInterval(recordTimerInterval);
+    recordTimerInterval = null;
+    if (recordTimerEl) { recordTimerEl.style.display = 'none'; recordTimerEl.textContent = '00:00'; }
+  }
+
+  function clearRecording(options = {}) {
+    const preserveVideoData = Boolean(options.preserveVideoData);
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      suppressRecordSave = true;
+      mediaRecorder.stop();
+    }
+    if (activeRecordStream) {
+      activeRecordStream.getTracks().forEach(t => t.stop());
+      activeRecordStream = null;
+    }
+    mediaRecorder   = null;
+    recordedChunks  = [];
+    if (!preserveVideoData) currentVideoFileUrl = '';
+    stopRecordTimer();
+    if (recordPreviewEl)    { recordPreviewEl.srcObject = null; recordPreviewEl.style.display = 'none'; }
+    if (recordedVideoPreview) { recordedVideoPreview.src = ''; recordedVideoPreview.style.display = 'none'; }
+    if (clearRecordBtn)     clearRecordBtn.style.display = 'none';
+    if (startRecordBtn)     startRecordBtn.style.display = 'inline-flex';
+    if (stopRecordBtn)      stopRecordBtn.style.display  = 'none';
+    if (videoFilePreview)   { videoFilePreview.innerHTML = ''; videoFilePreview.style.display = 'none'; }
+    if (videoFileInput)     { videoFileInput.value = ''; if (videoFileNameEl) videoFileNameEl.textContent = 'اختر ملف فيديو...'; }
+  }
+
+  /* ============================================================
+     FORM SUBMIT — إضافة / تعديل
+  ============================================================ */
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const title    = titleInput.value.trim();
+    const content  = contentInput.value.trim();
+    const category = categoryInput.value;
+    const video    = videoInput.value.trim();
+    const id       = editIdInput.value;
+
+    if (!title || !content || !category) {
+      showToast('⚠️ يرجى ملء جميع الحقول المطلوبة');
+      return;
     }
 
-    html[data-theme="light"],
-    html[data-theme="light"] body {
-      background-color: #f5f6fa;
-      color: #1a1d2e;
+    const existing          = id ? (MojazNewsStore.getById(id) || {}) : {};
+    const imageToUse        = currentImageUrl        || (id ? (existing.image        || '') : '');
+    const contentImageToUse = currentContentImageUrl || (id ? (existing.contentImage || '') : '');
+    const videoFileToUse    = currentVideoFileUrl    || (id ? (existing.videoFile    || '') : '');
+    const audioFileToUse    = currentAudioFileUrl    || (id ? (existing.audioFile    || '') : '');
+
+    if (submitBtn) submitBtn.disabled = true;
+
+    try {
+      if (id) {
+        await MojazNewsStore.update(id, {
+          title, content, category,
+          image: imageToUse,
+          contentImage: contentImageToUse,
+          video,
+          videoFile: videoFileToUse,
+          audioFile: audioFileToUse
+        });
+        showToast('✅ تم تحديث الخبر بنجاح');
+      } else {
+        await MojazNewsStore.add({
+          title, content, category,
+          image: imageToUse,
+          contentImage: contentImageToUse,
+          video,
+          videoFile: videoFileToUse,
+          audioFile: audioFileToUse
+        });
+        showToast('✅ تم نشر الخبر بنجاح');
+      }
+      resetForm();
+      renderAll();
+    } catch (error) {
+      showToast(error.message || 'تعذر حفظ الخبر');
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
     }
-  </style>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&family=Readex+Pro:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="style.css">
-</head>
-<body class="blog-page">
-  <div class="reading-progress" id="readingProgress"></div>
+  });
 
-  <header class="site-header" id="siteHeader">
-    <div class="header-top">
-      <div class="container">
-        <div class="header-top-inner">
-          <div class="header-meta">
-            <span class="meta-item">
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>
-              <span id="currentDate"></span>
-            </span>
-            <span class="meta-item">
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <span id="currentTime"></span>
-            </span>
-          </div>
-          <div class="header-controls">
-            <div class="font-size-controls">
-              <button class="ctrl-btn" id="fontDecrease" title="تصغير الخط">
-                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3.5 13h6"/><path d="m2 16 4.5-9 4.5 9"/><path d="M18 7v9"/><path d="m14 12 4 4 4-4"/></svg>
-              </button>
-              <button class="ctrl-btn" id="fontIncrease" title="تكبير الخط">
-                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3.5 13h6"/><path d="m2 16 4.5-9 4.5 9"/><path d="M18 16V7"/><path d="m14 11 4-4 4 4"/></svg>
-              </button>
+  cancelBtn?.addEventListener('click', resetForm);
+
+  /* ---- Reset Form ---- */
+  function resetForm() {
+    form?.reset();
+    editIdInput.value       = '';
+    currentImageUrl         = '';
+    currentContentImageUrl  = '';
+    currentAudioFileUrl     = '';
+    clearRecording();
+    if (imagePreview)         { imagePreview.innerHTML = '';         imagePreview.style.display = 'none'; }
+    if (imageFileName)          imageFileName.textContent = 'اختر صورة...';
+    if (contentImagePreview)  { contentImagePreview.innerHTML = '';  contentImagePreview.style.display = 'none'; }
+    if (contentImageFileName)   contentImageFileName.textContent = 'اختر صورة للمحتوى...';
+    if (audioFilePreview)     { audioFilePreview.innerHTML = '';     audioFilePreview.style.display = 'none'; }
+    if (audioFileNameEl)        audioFileNameEl.textContent = 'اختر ملف صوتي...';
+    if (formTitleEl)  formTitleEl.textContent = 'إضافة خبر جديد';
+    if (cancelBtn)    cancelBtn.style.display = 'none';
+    if (submitBtn)    submitBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg> نشر الخبر';
+  }
+
+  /* ---- Load into Edit Form ---- */
+  function loadForEdit(id) {
+    const news = MojazNewsStore.getById(id);
+    if (!news) return;
+
+    editIdInput.value       = id;
+    titleInput.value        = news.title;
+    contentInput.value      = news.content;
+    categoryInput.value     = news.category;
+    videoInput.value        = news.video || '';
+
+    // تحميل الـ URLs المخزّنة مسبقاً
+    currentImageUrl         = news.image        || '';
+    currentContentImageUrl  = news.contentImage || '';
+    currentVideoFileUrl     = news.videoFile    || '';
+    currentAudioFileUrl     = news.audioFile    || '';
+
+    if (imagePreview && news.image) {
+      imagePreview.innerHTML = `<img src="${news.image}" alt="preview">`;
+      imagePreview.style.display = 'block';
+      if (imageFileName) imageFileName.textContent = '✅ صورة محفوظة';
+    }
+    if (contentImagePreview && news.contentImage) {
+      contentImagePreview.innerHTML = `<img src="${news.contentImage}" alt="preview" style="width:100%;max-height:160px;object-fit:cover;border-radius:var(--radius);">`;
+      contentImagePreview.style.display = 'block';
+      if (contentImageFileName) contentImageFileName.textContent = '✅ صورة محتوى محفوظة';
+    }
+    if (videoFilePreview && news.videoFile) {
+      videoFilePreview.innerHTML = `<video src="${news.videoFile}" controls style="width:100%;max-height:180px;border-radius:var(--radius);background:#000;"></video>`;
+      videoFilePreview.style.display = 'block';
+      if (videoFileNameEl) videoFileNameEl.textContent = '✅ فيديو محفوظ';
+    }
+    if (audioFilePreview && news.audioFile) {
+      audioFilePreview.innerHTML = `
+        <audio controls style="width:100%;margin-top:8px;border-radius:8px;">
+          <source src="${news.audioFile}">
+        </audio>
+        <p style="font-size:12px;color:var(--text-muted,#888);margin:4px 0 0;">✅ تسجيل صوتي محفوظ</p>`;
+      audioFilePreview.style.display = 'block';
+      if (audioFileNameEl) audioFileNameEl.textContent = '✅ تسجيل صوتي محفوظ';
+    }
+
+    if (formTitleEl) formTitleEl.textContent = 'تعديل الخبر';
+    if (cancelBtn)   cancelBtn.style.display = 'inline-flex';
+    if (submitBtn)   submitBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg> حفظ التعديلات';
+
+    document.getElementById('adminFormCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  /* ---- Delete ---- */
+  async function deleteNews(id) {
+    if (!confirm('هل أنت متأكد من حذف هذا الخبر؟')) return;
+    await MojazNewsStore.remove(id);
+    showToast('🗑️ تم حذف الخبر');
+    renderAll();
+  }
+
+  /* ---- Format Date ---- */
+  function formatDate(ts) {
+    return new Date(ts).toLocaleString('ar-EG', {
+      day: 'numeric', month: 'long', year: 'numeric',
+      hour: 'numeric', minute: '2-digit'
+    });
+  }
+
+  /* ---- Render Stats ---- */
+  function renderStats() {
+    const allNews = MojazNewsStore.getAll();
+    if (statTotal) statTotal.textContent = allNews.length;
+    if (!statCatCards) return;
+    const cats = MojazNewsStore.getCategories();
+    const topCats = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    statCatCards.innerHTML = topCats.map(([cat, count]) =>
+      `<div class="admin-stat-sub"><span class="admin-stat-sub-num">${count}</span><span>${esc(cat)}</span></div>`
+    ).join('');
+    if (topCats.length > 0) statCatCards.style.display = 'flex';
+  }
+
+  /* ---- Populate Filter ---- */
+  function populateFilter() {
+    if (!filterSelect) return;
+    const cats = MojazNewsStore.getCategories();
+    filterSelect.innerHTML = '<option value="">كل التصنيفات</option>';
+    Object.keys(cats).sort().forEach(cat => {
+      const opt = document.createElement('option');
+      opt.value = cat;
+      opt.textContent = `${cat} (${cats[cat]})`;
+      filterSelect.appendChild(opt);
+    });
+  }
+
+  /* ---- Render News Feed ---- */
+  function renderNewsFeed() {
+    if (!newsFeed) return;
+    const filterVal = filterSelect ? filterSelect.value : '';
+    let allNews = MojazNewsStore.getAll();
+    if (filterVal) allNews = allNews.filter(n => n.category === filterVal);
+
+    if (newsCountEl) newsCountEl.textContent = `${allNews.length} خبر`;
+
+    if (!allNews.length) {
+      newsFeed.innerHTML = `<div class="comment-empty">لا توجد أخبار منشورة بعد. استخدم النموذج أعلاه لإضافة خبر.</div>`;
+      return;
+    }
+
+    newsFeed.innerHTML = '';
+    allNews.forEach(news => {
+      // ✅ استخدام getNewsId() في كل مكان
+      const newsId = getNewsId(news);
+
+      const item = document.createElement('article');
+      item.className = 'admin-news-item';
+      item.innerHTML = `
+        <div class="admin-news-item-inner">
+          ${news.image
+            ? `<div class="admin-news-thumb"><img src="${esc(news.image)}" alt="${esc(news.title)}" loading="lazy"></div>`
+            : '<div class="admin-news-thumb admin-news-thumb-empty"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg></div>'}
+          <div class="admin-news-body">
+            <div class="admin-news-meta">
+              <span class="cat-card-badge">${esc(news.category)}</span>
+              ${news.video     ? '<span class="admin-has-video"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 3 20 12 6 21 6 3"/></svg> فيديو</span>' : ''}
+              ${news.videoFile ? '<span class="admin-has-video"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 3 20 12 6 21 6 3"/></svg> ملف فيديو</span>' : ''}
+              ${news.audioFile ? '<span class="admin-has-video"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg> صوت</span>' : ''}
+              <time class="comment-time">${formatDate(news.createdAt)}</time>
             </div>
-            <button class="theme-toggle" id="themeToggle" title="تغيير المظهر" aria-label="تبديل الوضع الداكن">
-              <div class="toggle-icon sun-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
-              </div>
-              <div class="toggle-icon moon-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
-              </div>
+            <h4 class="admin-news-title">${esc(news.title)}</h4>
+            <p class="admin-news-excerpt">${esc(news.content.length > 150 ? news.content.slice(0, 150) + '...' : news.content)}</p>
+          </div>
+          <div class="admin-news-actions">
+            <button class="admin-action-btn admin-edit-btn" data-id="${newsId}" title="تعديل">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              تعديل
             </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="header-main">
-      <div class="container">
-        <div class="header-main-inner">
-          <a class="site-logo" href="index.html" aria-label="العودة إلى الرئيسية">
-            <h1 class="logo-text">
-              <span class="logo-primary">مُوجز</span><span class="logo-accent"> 24</span>
-            </h1>
-            <p class="logo-tagline">#إعلام_يترك_أثراً</p>
-          </a>
-
-          <nav class="main-nav">
-            <div class="nav-group">
-              <a href="index.html" class="nav-item">
-                <span class="nav-icon">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
-                </span>
-                <span class="nav-label">الرئيسية</span>
-              </a>
-            </div>
-            <div class="nav-group">
-              <a href="blog.html" class="nav-item">
-                <span class="nav-icon">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4h6v6"/><path d="m10 20-6-6"/><path d="M20 10a8 8 0 1 0-8 8h8"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
-                </span>
-                <span class="nav-label">المدونة</span>
-              </a>
-            </div>
-            <div class="nav-group">
-              <a href="admin.html" class="nav-item active">
-                <span class="nav-icon">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-                </span>
-                <span class="nav-label">الإدارة</span>
-              </a>
-            </div>
-          </nav>
-
-          <div class="header-actions">
-            <a href="blog.html" class="blog-btn">المدونة</a>
-            <a href="admin.html" class="blog-btn active">الإدارة</a>
-            <button class="search-btn" id="searchToggle" type="button">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="search-overlay" id="searchOverlay">
-      <div class="container">
-        <div class="search-inner">
-          <input type="search" placeholder="ابحث في الأخبار..." id="searchInput" class="search-input">
-          <button class="search-close" id="searchClose" type="button">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </button>
-        </div>
-      </div>
-    </div>
-  </header>
-
-  <main class="site-main blog-main">
-    <div class="container">
-      <section class="blog-shell" data-animate>
-        <div class="section-header blog-header">
-          <div>
-            <span class="section-badge">الإدارة</span>
-            <h2 class="section-title">لوحة الأخبار</h2>
-          </div>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-            <span class="comments-count" id="newsCount">0 خبر</span>
-            <a href="index.html" class="admin-link-btn">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-              معاينة الرئيسية
+            <a href="article.html?id=${encodeURIComponent(newsId)}" class="admin-action-btn admin-view-btn" title="عرض المقال" target="_blank">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              عرض
             </a>
-          </div>
-        </div>
-
-        <div class="admin-stats">
-          <div class="admin-stat-card">
-            <span class="admin-stat-num" id="statTotal">0</span>
-            <span class="admin-stat-label">إجمالي الأخبار</span>
-          </div>
-          <div class="admin-stat-card" id="statCatCards"></div>
-        </div>
-
-        <section class="blog-card admin-form-card" id="adminFormCard">
-          <div class="admin-form-header">
-            <h3 id="formTitle">إضافة خبر جديد</h3>
-            <button class="admin-cancel-btn" id="cancelEditBtn" type="button" style="display:none;">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-              إلغاء التعديل
+            <button class="admin-action-btn admin-delete-btn" data-id="${newsId}" title="حذف">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="m19 6-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+              حذف
             </button>
           </div>
+        </div>`;
 
-          <form id="adminNewsForm" class="admin-form">
-            <input type="hidden" id="editNewsId">
+      newsFeed.appendChild(item);
+    });
 
-            <div class="admin-form-row">
-              <div class="admin-field">
-                <label for="newsTitle">عنوان الخبر</label>
-                <input id="newsTitle" class="admin-input" type="text" placeholder="اكتب عنوان الخبر" required>
-              </div>
-              <div class="admin-field">
-                <label for="newsCategory">التصنيف</label>
-          <select id="newsCategory" class="admin-input admin-select" required>
-  <option value="">اختر التصنيف</option>
+    // ✅ Bind buttons بعد إضافة الـ DOM
+    newsFeed.querySelectorAll('.admin-edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => loadForEdit(btn.dataset.id));
+    });
+    newsFeed.querySelectorAll('.admin-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteNews(btn.dataset.id));
+    });
+  }
 
-  <optgroup label="── غرفة الأخبار ──">
-    <option value="عاجل">عاجل</option>
-    <option value="عالمي">عالمي</option>
-    <option value="سياسة">سياسة</option>
-    <option value="اقتصاد">اقتصاد</option>
-    <option value="رياضة">رياضة</option>
-    <option value="فن">فن</option>
-    <option value="صحة">صحة</option>
-    <option value="ثقافة">ثقافة</option>
-    <option value="مقالات">مقالات</option>
-    <option value="تقارير">تقارير</option>
-    <option value="أسعار وأسواق">أسعار وأسواق</option>
-    <option value="دين وحياة">دين وحياة</option>
-    <option value="سياحة وطيران">سياحة وطيران</option>
-    <option value="كاريكاتير">كاريكاتير</option>
-  </optgroup>
+  /* ---- Render All ---- */
+  function renderAll() {
+    renderStats();
+    populateFilter();
+    renderNewsFeed();
+  }
 
-  <optgroup label="── أقسام خاصة ──">
-    <option value="عدسة العالم">عدسة العالم</option>
-    <option value="حياة كريمة">حياة كريمة</option>
-    <option value="قدوة مصرية">قدوة مصرية</option>
-    <option value="وثائقيات">وثائقيات</option>
-  </optgroup>
+  filterSelect?.addEventListener('change', renderNewsFeed);
 
-  <optgroup label="── مدارس وجامعات ──">
-    <option value="كواليس التعليم">كواليس التعليم</option>
-    <option value="سينما التعليم">سينما التعليم</option>
-  </optgroup>
+  renderAll();
+  MojazNewsStore.ready().then(renderAll).catch(renderAll);
+  window.addEventListener(MojazNewsStore.UPDATE_EVENT, renderAll);
 
-  <optgroup label="── المستقبل الرقمي ──">
-    <option value="كود الخبر">كود الخبر</option>
-    <option value="عين التقنية">عين التقنية</option>
-  </optgroup>
-
-  <optgroup label="── صوت الشارع ──">
-    <option value="حوادث">حوادث</option>
-    <option value="عين الحقيقة">عين الحقيقة</option>
-  </optgroup>
-
-  <optgroup label="── تراثنا ──">
-    <option value="أصل الحكاية">أصل الحكاية</option>
-    <option value="حكاية وكادر">حكاية وكادر</option>
-  </optgroup>
-
-  <optgroup label="── أثير ──">
-    <option value="Radio On Air">Radio On Air</option>
-    <option value="بودكاست">بودكاست</option>
-  </optgroup>
-
-</select>
-              </div>
-            </div>
-
-            <div class="admin-field">
-              <label for="newsContent">محتوى الخبر</label>
-              <textarea id="newsContent" class="admin-input admin-textarea" rows="7" placeholder="اكتب المحتوى. يمكنك استخدام فواصل الأسطر بين الفقرات." required></textarea>
-            </div>
-
-            <div class="admin-form-row">
-              <div class="admin-field">
-                <label for="newsImage">صورة الغلاف</label>
-                <div class="admin-upload-wrap">
-                  <input id="newsImage" class="admin-file-input" type="file" accept="image/*">
-                  <label class="admin-upload-label" for="newsImage">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-                    <span id="imageFileName">اختر صورة...</span>
-                  </label>
-                  <div class="admin-img-preview" id="imagePreview"></div>
-                </div>
-              </div>
-
-              <div class="admin-field">
-                <label for="newsContentImage">صورة داخل المحتوى <span class="admin-field-hint">اختيارية</span></label>
-                <div class="admin-upload-wrap">
-                  <input id="newsContentImage" class="admin-file-input" type="file" accept="image/*">
-                  <label class="admin-upload-label" for="newsContentImage">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-                    <span id="contentImageFileName">اختر صورة للمحتوى...</span>
-                  </label>
-                  <div class="admin-img-preview" id="contentImagePreview"></div>
-                </div>
-              </div>
-            </div>
-
-            <div class="admin-form-row">
-              <div class="admin-field">
-                <label for="newsVideo">رابط فيديو <span class="admin-field-hint">اختياري</span></label>
-                <input id="newsVideo" class="admin-input" type="url" placeholder="https://example.com/video">
-              </div>
-
-              <div class="admin-field">
-                <label for="newsVideoFile">رفع فيديو <span class="admin-field-hint">اختياري</span></label>
-                <div class="admin-upload-wrap">
-                  <input id="newsVideoFile" class="admin-file-input" type="file" accept="video/*">
-                  <label class="admin-upload-label" for="newsVideoFile">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-                    <span id="videoFileName">اختر ملف فيديو...</span>
-                  </label>
-                  <div class="admin-video-preview" id="videoFilePreview"></div>
-                </div>
-              </div>
-            </div>
-<div class="admin-field">
-  <label for="newsAudioFile">رفع تسجيل صوتي <span class="admin-field-hint">اختياري</span></label>
-  <div class="admin-upload-wrap">
-    <input id="newsAudioFile" class="admin-file-input" type="file" accept="audio/*">
-    <label class="admin-upload-label" for="newsAudioFile">
-      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24"
-           fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-        <line x1="12" x2="12" y1="19" y2="22"/>
-      </svg>
-      <span id="audioFileName">اختر ملف صوتي...</span>
-    </label>
-    <div class="admin-audio-preview" id="audioFilePreview"></div>
-  </div>
-</div>
-            <div class="admin-field">
-              <label>تسجيل فيديو من المتصفح <span class="admin-field-hint">اختياري</span></label>
-              <div class="admin-record-wrap">
-                <div class="admin-record-controls">
-                  <button id="startRecordBtn" class="admin-record-btn" type="button">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>
-                    بدء التسجيل
-                  </button>
-                  <button id="stopRecordBtn" class="admin-record-btn admin-record-stop" type="button" style="display:none;">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-                    إيقاف التسجيل
-                  </button>
-                  <span id="recordTimer" class="admin-record-timer" style="display:none;">00:00</span>
-                  <button id="clearRecordBtn" class="admin-cancel-btn" type="button" style="display:none;">مسح التسجيل</button>
-                </div>
-                <video id="recordPreview" class="admin-record-preview" autoplay muted playsinline style="display:none;"></video>
-                <video id="recordedVideoPreview" class="admin-record-preview" controls playsinline style="display:none;"></video>
-              </div>
-            </div>
-
-            <div class="comment-form-actions">
-              <button id="submitBtn" type="submit" class="newsletter-btn blog-submit-btn">
-                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-                نشر الخبر
-              </button>
-            </div>
-          </form>
-        </section>
-
-        <section class="blog-card comments-feed-card">
-          <div class="comments-header">
-            <h3>الأخبار المنشورة</h3>
-            <select id="filterCategory" class="admin-input admin-select" style="max-width:220px;">
-              <option value="">كل التصنيفات</option>
-            </select>
-          </div>
-          <div class="admin-news-feed" id="adminNewsFeed"></div>
-        </section>
-      </section>
-    </div>
-  </main>
-
-  <footer class="site-footer">
-    <div class="footer-bg-glow footer-glow-right"></div>
-    <div class="footer-bg-glow footer-glow-left"></div>
-    <div class="container">
-      <div class="footer-grid">
-        <div class="footer-brand">
-          <h2 class="footer-logo"><span class="logo-primary">مُوجز</span><span>24</span></h2>
-        </div>
-        <div class="footer-links">
-          <h3>روابط سريعة</h3>
-          <ul>
-            <li><a href="index.html">الرئيسية</a></li>
-            <li><a href="blog.html">المدونة</a></li>
-            <li><a href="category.html">التصنيفات</a></li>
-          </ul>
-        </div>
-      </div>
-    </div>
-    <div class="footer-bottom">
-      <div class="container">
-        <p>© 2026 مُوجز 24. جميع الحقوق محفوظة.</p>
-      </div>
-    </div>
-  </footer>
-
-  <div class="toast" id="toast"></div>
-
-  <script src="script.js"></script>
-  <script src="api.js"></script>
-  <script src="news-store.js"></script>
-  <script src="Auth.js"></script>
-  <script src="admin.js"></script>
-  <script src="Admin session bar.js"></script>
-</body>
-</html>
+})();
