@@ -1,6 +1,9 @@
 /**
  * مُوجز 24 — Admin News Builder
- * Manages: add, edit, delete news via localStorage
+ * ✅ الإصلاحات:
+ * 1. الصور / الفيديو / الصوت تُرفع عبر Cloudinary بدلاً من Base64
+ * 2. استخدام getNewsId() بشكل موحّد في كل مكان
+ * 3. زر "عرض" في قائمة الأخبار يفتح المقال الصحيح
  */
 
 (function () {
@@ -23,12 +26,10 @@
   const imagePreview  = document.getElementById('imagePreview');
   const imageFileName = document.getElementById('imageFileName');
 
-  // Content image elements
   const contentImageInput    = document.getElementById('newsContentImage');
   const contentImagePreview  = document.getElementById('contentImagePreview');
   const contentImageFileName = document.getElementById('contentImageFileName');
 
-  // Video file / record elements
   const videoFileInput        = document.getElementById('newsVideoFile');
   const videoFilePreview      = document.getElementById('videoFilePreview');
   const videoFileNameEl       = document.getElementById('videoFileName');
@@ -39,101 +40,157 @@
   const recordedVideoPreview  = document.getElementById('recordedVideoPreview');
   const clearRecordBtn        = document.getElementById('clearRecordBtn');
 
-  // ── Audio file elements ──
   const audioFileInput    = document.getElementById('newsAudioFile');
   const audioFileNameEl   = document.getElementById('audioFileName');
   const audioFilePreview  = document.getElementById('audioFilePreview');
 
-  // In-memory data for current form
-  let currentImageData        = '';
-  let currentContentImageData = '';
-  let currentVideoFileData    = '';
-  let currentAudioFileData    = '';   // ← جديد
+  // URLs من Cloudinary (نخزّن الـ URL فقط، لا base64)
+  let currentImageUrl        = '';
+  let currentContentImageUrl = '';
+  let currentVideoFileUrl    = '';
+  let currentAudioFileUrl    = '';
 
   // Recording state
-  let mediaRecorder = null;
-  let activeRecordStream = null;
-  let recordedChunks = [];
-  let recordTimerInterval = null;
-  let recordSeconds = 0;
-  let suppressRecordSave = false;
+  let mediaRecorder        = null;
+  let activeRecordStream   = null;
+  let recordedChunks       = [];
+  let recordTimerInterval  = null;
+  let recordSeconds        = 0;
+  let suppressRecordSave   = false;
 
+  /* ---- Helper: get news ID ---- */
   function getNewsId(news) {
     return news?._id || news?.id || '';
   }
 
-  /* ---- Image Upload Preview ---- */
-  imageInput?.addEventListener('change', () => {
+  /* ---- Helper: escape HTML ---- */
+  function esc(str) {
+    const d = document.createElement('div');
+    d.textContent = str || '';
+    return d.innerHTML;
+  }
+
+  /* ---- Helper: show upload spinner ---- */
+  function setUploading(label, isUploading) {
+    if (!label) return;
+    label.textContent = isUploading ? '⏳ جارٍ الرفع...' : label.dataset.original || '';
+  }
+
+  /* ============================================================
+     IMAGE UPLOAD — رفع صورة الغلاف
+  ============================================================ */
+  imageInput?.addEventListener('change', async () => {
     const file = imageInput.files[0];
     if (!file) return;
-    imageFileName.textContent = file.name;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      currentImageData = e.target.result;
+
+    if (imageFileName) {
+      imageFileName.dataset.original = file.name;
+      setUploading(imageFileName, true);
+    }
+
+    try {
+      const url = await uploadImage(file);
+      currentImageUrl = url;
       if (imagePreview) {
-        imagePreview.innerHTML = `<img src="${currentImageData}" alt="preview">`;
+        imagePreview.innerHTML = `<img src="${url}" alt="preview">`;
         imagePreview.style.display = 'block';
       }
-    };
-    reader.readAsDataURL(file);
+      if (imageFileName) imageFileName.textContent = '✅ ' + file.name;
+    } catch (err) {
+      showToast('⚠️ فشل رفع الصورة: ' + err.message);
+      if (imageFileName) imageFileName.textContent = 'فشل الرفع';
+    }
   });
 
-  /* ---- Content Image Upload Preview ---- */
-  contentImageInput?.addEventListener('change', () => {
+  /* ============================================================
+     CONTENT IMAGE UPLOAD — رفع صورة المحتوى
+  ============================================================ */
+  contentImageInput?.addEventListener('change', async () => {
     const file = contentImageInput.files[0];
     if (!file) return;
-    if (contentImageFileName) contentImageFileName.textContent = file.name;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      currentContentImageData = e.target.result;
+
+    if (contentImageFileName) {
+      contentImageFileName.dataset.original = file.name;
+      setUploading(contentImageFileName, true);
+    }
+
+    try {
+      const url = await uploadImage(file);
+      currentContentImageUrl = url;
       if (contentImagePreview) {
-        contentImagePreview.innerHTML = `<img src="${currentContentImageData}" alt="preview" style="width:100%;max-height:160px;object-fit:cover;border-radius:var(--radius);">`;
+        contentImagePreview.innerHTML = `<img src="${url}" alt="preview" style="width:100%;max-height:160px;object-fit:cover;border-radius:var(--radius);">`;
         contentImagePreview.style.display = 'block';
       }
-    };
-    reader.readAsDataURL(file);
+      if (contentImageFileName) contentImageFileName.textContent = '✅ ' + file.name;
+    } catch (err) {
+      showToast('⚠️ فشل رفع صورة المحتوى: ' + err.message);
+      if (contentImageFileName) contentImageFileName.textContent = 'فشل الرفع';
+    }
   });
 
-  /* ---- Video File Upload ---- */
-  videoFileInput?.addEventListener('change', () => {
+  /* ============================================================
+     VIDEO FILE UPLOAD — رفع ملف فيديو
+  ============================================================ */
+  videoFileInput?.addEventListener('change', async () => {
     const file = videoFileInput.files[0];
     if (!file) return;
-    if (videoFileNameEl) videoFileNameEl.textContent = file.name;
+
     clearRecording({ preserveVideoData: true });
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      currentVideoFileData = e.target.result;
+
+    if (videoFileNameEl) {
+      videoFileNameEl.dataset.original = file.name;
+      setUploading(videoFileNameEl, true);
+    }
+
+    try {
+      const url = await uploadVideo(file);
+      currentVideoFileUrl = url;
       if (videoFilePreview) {
-        videoFilePreview.innerHTML = `<video src="${currentVideoFileData}" controls style="width:100%;max-height:180px;border-radius:var(--radius);background:#000;"></video>`;
+        videoFilePreview.innerHTML = `<video src="${url}" controls style="width:100%;max-height:180px;border-radius:var(--radius);background:#000;"></video>`;
         videoFilePreview.style.display = 'block';
       }
-    };
-    reader.readAsDataURL(file);
+      if (videoFileNameEl) videoFileNameEl.textContent = '✅ ' + file.name;
+    } catch (err) {
+      showToast('⚠️ فشل رفع الفيديو: ' + err.message);
+      if (videoFileNameEl) videoFileNameEl.textContent = 'فشل الرفع';
+    }
   });
 
-  /* ── Audio File Upload ── */
-  audioFileInput?.addEventListener('change', () => {
+  /* ============================================================
+     AUDIO FILE UPLOAD — رفع ملف صوتي
+  ============================================================ */
+  audioFileInput?.addEventListener('change', async () => {
     const file = audioFileInput.files[0];
     if (!file) return;
-    if (audioFileNameEl) audioFileNameEl.textContent = file.name;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      currentAudioFileData = e.target.result;
+
+    if (audioFileNameEl) {
+      audioFileNameEl.dataset.original = file.name;
+      setUploading(audioFileNameEl, true);
+    }
+
+    try {
+      const url = await uploadAudio(file);
+      currentAudioFileUrl = url;
       if (audioFilePreview) {
         audioFilePreview.innerHTML = `
           <audio controls style="width:100%;margin-top:8px;border-radius:8px;">
-            <source src="${currentAudioFileData}" type="${file.type}">
+            <source src="${url}" type="${file.type}">
           </audio>
           <p style="font-size:12px;color:var(--text-muted,#888);margin:4px 0 0;">
             ${esc(file.name)} — ${(file.size / 1024).toFixed(0)} KB
           </p>`;
         audioFilePreview.style.display = 'block';
       }
-    };
-    reader.readAsDataURL(file);
+      if (audioFileNameEl) audioFileNameEl.textContent = '✅ ' + file.name;
+    } catch (err) {
+      showToast('⚠️ فشل رفع الصوت: ' + err.message);
+      if (audioFileNameEl) audioFileNameEl.textContent = 'فشل الرفع';
+    }
   });
 
-  /* ---- Video Recording ---- */
+  /* ============================================================
+     VIDEO RECORDING — تسجيل الكاميرا
+  ============================================================ */
   startRecordBtn?.addEventListener('click', async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -141,38 +198,46 @@
       recordedChunks = [];
       mediaRecorder = new MediaRecorder(stream);
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         activeRecordStream = null;
-        if (suppressRecordSave) {
-          suppressRecordSave = false;
-          return;
-        }
+        if (suppressRecordSave) { suppressRecordSave = false; return; }
+
+        stopRecordTimer();
+        if (startRecordBtn) startRecordBtn.style.display = 'inline-flex';
+        if (stopRecordBtn)  stopRecordBtn.style.display  = 'none';
+        if (recordPreviewEl) recordPreviewEl.style.display = 'none';
+
         const blob = new Blob(recordedChunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        const fr = new FileReader();
-        fr.onload = (ev) => {
-          currentVideoFileData = ev.target.result;
+        const localUrl = URL.createObjectURL(blob);
+
+        if (recordedVideoPreview) { recordedVideoPreview.src = localUrl; recordedVideoPreview.style.display = 'block'; }
+        if (clearRecordBtn) clearRecordBtn.style.display = 'inline-flex';
+
+        // رفع التسجيل لـ Cloudinary
+        showToast('⏳ جارٍ رفع التسجيل...');
+        try {
+          const file = new File([blob], 'recording.webm', { type: 'video/webm' });
+          const url = await uploadVideo(file);
+          currentVideoFileUrl = url;
           if (videoFilePreview) {
             videoFilePreview.innerHTML = `<video src="${url}" controls style="width:100%;max-height:180px;border-radius:var(--radius);background:#000;"></video>`;
             videoFilePreview.style.display = 'block';
           }
-        };
-        fr.readAsDataURL(blob);
-        if (recordPreviewEl) recordPreviewEl.style.display = 'none';
-        if (recordedVideoPreview) { recordedVideoPreview.src = url; recordedVideoPreview.style.display = 'block'; }
-        if (clearRecordBtn) clearRecordBtn.style.display = 'inline-flex';
-        stopRecordTimer();
-        if (startRecordBtn) startRecordBtn.style.display = 'inline-flex';
-        if (stopRecordBtn) stopRecordBtn.style.display = 'none';
+          showToast('✅ تم رفع التسجيل');
+        } catch (err) {
+          showToast('⚠️ فشل رفع التسجيل: ' + err.message);
+        }
+
         if (videoFileInput) { videoFileInput.value = ''; if (videoFileNameEl) videoFileNameEl.textContent = 'اختر ملف فيديو...'; }
       };
+
       if (recordPreviewEl) { recordPreviewEl.srcObject = stream; recordPreviewEl.style.display = 'block'; }
       mediaRecorder.start();
       startRecordTimer();
       if (startRecordBtn) startRecordBtn.style.display = 'none';
-      if (stopRecordBtn) stopRecordBtn.style.display = 'inline-flex';
-      if (recordTimerEl) recordTimerEl.style.display = 'inline-flex';
+      if (stopRecordBtn)  stopRecordBtn.style.display  = 'inline-flex';
+      if (recordTimerEl)  recordTimerEl.style.display  = 'inline-flex';
     } catch (err) {
       showToast('⚠️ تعذّر الوصول إلى الكاميرا');
     }
@@ -182,9 +247,7 @@
     if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   });
 
-  clearRecordBtn?.addEventListener('click', () => {
-    clearRecording();
-  });
+  clearRecordBtn?.addEventListener('click', () => clearRecording());
 
   function startRecordTimer() {
     recordSeconds = 0;
@@ -210,23 +273,25 @@
       mediaRecorder.stop();
     }
     if (activeRecordStream) {
-      activeRecordStream.getTracks().forEach(track => track.stop());
+      activeRecordStream.getTracks().forEach(t => t.stop());
       activeRecordStream = null;
     }
-    mediaRecorder = null;
-    recordedChunks = [];
-    if (!preserveVideoData) currentVideoFileData = '';
+    mediaRecorder   = null;
+    recordedChunks  = [];
+    if (!preserveVideoData) currentVideoFileUrl = '';
     stopRecordTimer();
-    if (recordPreviewEl) { recordPreviewEl.srcObject = null; recordPreviewEl.style.display = 'none'; }
+    if (recordPreviewEl)    { recordPreviewEl.srcObject = null; recordPreviewEl.style.display = 'none'; }
     if (recordedVideoPreview) { recordedVideoPreview.src = ''; recordedVideoPreview.style.display = 'none'; }
-    if (clearRecordBtn) clearRecordBtn.style.display = 'none';
-    if (startRecordBtn) startRecordBtn.style.display = 'inline-flex';
-    if (stopRecordBtn) stopRecordBtn.style.display = 'none';
-    if (videoFilePreview) { videoFilePreview.innerHTML = ''; videoFilePreview.style.display = 'none'; }
-    if (videoFileInput) { videoFileInput.value = ''; if (videoFileNameEl) videoFileNameEl.textContent = 'اختر ملف فيديو...'; }
+    if (clearRecordBtn)     clearRecordBtn.style.display = 'none';
+    if (startRecordBtn)     startRecordBtn.style.display = 'inline-flex';
+    if (stopRecordBtn)      stopRecordBtn.style.display  = 'none';
+    if (videoFilePreview)   { videoFilePreview.innerHTML = ''; videoFilePreview.style.display = 'none'; }
+    if (videoFileInput)     { videoFileInput.value = ''; if (videoFileNameEl) videoFileNameEl.textContent = 'اختر ملف فيديو...'; }
   }
 
-  /* ---- Form Submit (Add / Edit) ---- */
+  /* ============================================================
+     FORM SUBMIT — إضافة / تعديل
+  ============================================================ */
   form?.addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -241,39 +306,38 @@
       return;
     }
 
-    const existing = id ? (MojazNewsStore.getById(id) || {}) : {};
-    const imageToUse        = currentImageData        || (id ? (existing.image        || '') : '');
-    const contentImageToUse = currentContentImageData || (id ? (existing.contentImage || '') : '');
-    const videoFileToUse    = currentVideoFileData    || (id ? (existing.videoFile    || '') : '');
-    const audioFileToUse    = currentAudioFileData    || (id ? (existing.audioFile    || '') : '');  // ← جديد
+    const existing          = id ? (MojazNewsStore.getById(id) || {}) : {};
+    const imageToUse        = currentImageUrl        || (id ? (existing.image        || '') : '');
+    const contentImageToUse = currentContentImageUrl || (id ? (existing.contentImage || '') : '');
+    const videoFileToUse    = currentVideoFileUrl    || (id ? (existing.videoFile    || '') : '');
+    const audioFileToUse    = currentAudioFileUrl    || (id ? (existing.audioFile    || '') : '');
 
     if (submitBtn) submitBtn.disabled = true;
 
     try {
       if (id) {
-      await MojazNewsStore.update(id, {
-        title, content, category,
-        image: imageToUse,
-        contentImage: contentImageToUse,
-        video,
-        videoFile: videoFileToUse,
-        audioFile: audioFileToUse   // ← جديد
-      });
-      showToast('✅ تم تحديث الخبر بنجاح');
-    } else {
-      await MojazNewsStore.add({
-        title, content, category,
-        image: imageToUse,
-        contentImage: contentImageToUse,
-        video,
-        videoFile: videoFileToUse,
-        audioFile: audioFileToUse   // ← جديد
-      });
-      showToast('✅ تم نشر الخبر بنجاح');
-    }
-
-    resetForm();
-    renderAll();
+        await MojazNewsStore.update(id, {
+          title, content, category,
+          image: imageToUse,
+          contentImage: contentImageToUse,
+          video,
+          videoFile: videoFileToUse,
+          audioFile: audioFileToUse
+        });
+        showToast('✅ تم تحديث الخبر بنجاح');
+      } else {
+        await MojazNewsStore.add({
+          title, content, category,
+          image: imageToUse,
+          contentImage: contentImageToUse,
+          video,
+          videoFile: videoFileToUse,
+          audioFile: audioFileToUse
+        });
+        showToast('✅ تم نشر الخبر بنجاح');
+      }
+      resetForm();
+      renderAll();
     } catch (error) {
       showToast(error.message || 'تعذر حفظ الخبر');
     } finally {
@@ -281,25 +345,22 @@
     }
   });
 
-  /* ---- Cancel Edit ---- */
-  cancelBtn?.addEventListener('click', () => {
-    resetForm();
-  });
+  cancelBtn?.addEventListener('click', resetForm);
 
   /* ---- Reset Form ---- */
   function resetForm() {
     form?.reset();
-    editIdInput.value = '';
-    currentImageData        = '';
-    currentContentImageData = '';
-    currentAudioFileData    = '';   // ← جديد
+    editIdInput.value       = '';
+    currentImageUrl         = '';
+    currentContentImageUrl  = '';
+    currentAudioFileUrl     = '';
     clearRecording();
     if (imagePreview)         { imagePreview.innerHTML = '';         imagePreview.style.display = 'none'; }
     if (imageFileName)          imageFileName.textContent = 'اختر صورة...';
     if (contentImagePreview)  { contentImagePreview.innerHTML = '';  contentImagePreview.style.display = 'none'; }
     if (contentImageFileName)   contentImageFileName.textContent = 'اختر صورة للمحتوى...';
-    if (audioFilePreview)     { audioFilePreview.innerHTML = '';     audioFilePreview.style.display = 'none'; }  // ← جديد
-    if (audioFileNameEl)        audioFileNameEl.textContent = 'اختر ملف صوتي...';                               // ← جديد
+    if (audioFilePreview)     { audioFilePreview.innerHTML = '';     audioFilePreview.style.display = 'none'; }
+    if (audioFileNameEl)        audioFileNameEl.textContent = 'اختر ملف صوتي...';
     if (formTitleEl)  formTitleEl.textContent = 'إضافة خبر جديد';
     if (cancelBtn)    cancelBtn.style.display = 'none';
     if (submitBtn)    submitBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg> نشر الخبر';
@@ -315,38 +376,36 @@
     contentInput.value      = news.content;
     categoryInput.value     = news.category;
     videoInput.value        = news.video || '';
-    currentImageData        = news.image        || '';
-    currentContentImageData = news.contentImage || '';
-    currentVideoFileData    = news.videoFile    || '';
-    currentAudioFileData    = news.audioFile    || '';   // ← جديد
+
+    // تحميل الـ URLs المخزّنة مسبقاً
+    currentImageUrl         = news.image        || '';
+    currentContentImageUrl  = news.contentImage || '';
+    currentVideoFileUrl     = news.videoFile    || '';
+    currentAudioFileUrl     = news.audioFile    || '';
 
     if (imagePreview && news.image) {
       imagePreview.innerHTML = `<img src="${news.image}" alt="preview">`;
       imagePreview.style.display = 'block';
-      if (imageFileName) imageFileName.textContent = 'صورة محفوظة';
+      if (imageFileName) imageFileName.textContent = '✅ صورة محفوظة';
     }
-
     if (contentImagePreview && news.contentImage) {
       contentImagePreview.innerHTML = `<img src="${news.contentImage}" alt="preview" style="width:100%;max-height:160px;object-fit:cover;border-radius:var(--radius);">`;
       contentImagePreview.style.display = 'block';
-      if (contentImageFileName) contentImageFileName.textContent = 'صورة محتوى محفوظة';
+      if (contentImageFileName) contentImageFileName.textContent = '✅ صورة محتوى محفوظة';
     }
-
     if (videoFilePreview && news.videoFile) {
       videoFilePreview.innerHTML = `<video src="${news.videoFile}" controls style="width:100%;max-height:180px;border-radius:var(--radius);background:#000;"></video>`;
       videoFilePreview.style.display = 'block';
-      if (videoFileNameEl) videoFileNameEl.textContent = 'فيديو محفوظ';
+      if (videoFileNameEl) videoFileNameEl.textContent = '✅ فيديو محفوظ';
     }
-
-    // ── تحميل الصوت المحفوظ عند التعديل ── // ← جديد
     if (audioFilePreview && news.audioFile) {
       audioFilePreview.innerHTML = `
         <audio controls style="width:100%;margin-top:8px;border-radius:8px;">
           <source src="${news.audioFile}">
         </audio>
-        <p style="font-size:12px;color:var(--text-muted,#888);margin:4px 0 0;">تسجيل صوتي محفوظ</p>`;
+        <p style="font-size:12px;color:var(--text-muted,#888);margin:4px 0 0;">✅ تسجيل صوتي محفوظ</p>`;
       audioFilePreview.style.display = 'block';
-      if (audioFileNameEl) audioFileNameEl.textContent = 'تسجيل صوتي محفوظ';
+      if (audioFileNameEl) audioFileNameEl.textContent = '✅ تسجيل صوتي محفوظ';
     }
 
     if (formTitleEl) formTitleEl.textContent = 'تعديل الخبر';
@@ -372,18 +431,10 @@
     });
   }
 
-  /* ---- Escape HTML ---- */
-  function esc(str) {
-    const d = document.createElement('div');
-    d.textContent = str || '';
-    return d.innerHTML;
-  }
-
   /* ---- Render Stats ---- */
   function renderStats() {
     const allNews = MojazNewsStore.getAll();
     if (statTotal) statTotal.textContent = allNews.length;
-
     if (!statCatCards) return;
     const cats = MojazNewsStore.getCategories();
     const topCats = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 4);
@@ -393,7 +444,7 @@
     if (topCats.length > 0) statCatCards.style.display = 'flex';
   }
 
-  /* ---- Populate Filter Select ---- */
+  /* ---- Populate Filter ---- */
   function populateFilter() {
     if (!filterSelect) return;
     const cats = MojazNewsStore.getCategories();
@@ -422,6 +473,9 @@
 
     newsFeed.innerHTML = '';
     allNews.forEach(news => {
+      // ✅ استخدام getNewsId() في كل مكان
+      const newsId = getNewsId(news);
+
       const item = document.createElement('article');
       item.className = 'admin-news-item';
       item.innerHTML = `
@@ -432,35 +486,34 @@
           <div class="admin-news-body">
             <div class="admin-news-meta">
               <span class="cat-card-badge">${esc(news.category)}</span>
-              ${news.video ? '<span class="admin-has-video"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 3 20 12 6 21 6 3"/></svg> فيديو</span>' : ''}
+              ${news.video     ? '<span class="admin-has-video"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 3 20 12 6 21 6 3"/></svg> فيديو</span>' : ''}
+              ${news.videoFile ? '<span class="admin-has-video"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 3 20 12 6 21 6 3"/></svg> ملف فيديو</span>' : ''}
               ${news.audioFile ? '<span class="admin-has-video"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg> صوت</span>' : ''}
               <time class="comment-time">${formatDate(news.createdAt)}</time>
-              ${news.updatedAt !== news.createdAt ? `<span class="admin-edited">معدّل</span>` : ''}
             </div>
             <h4 class="admin-news-title">${esc(news.title)}</h4>
             <p class="admin-news-excerpt">${esc(news.content.length > 150 ? news.content.slice(0, 150) + '...' : news.content)}</p>
           </div>
           <div class="admin-news-actions">
-            <button class="admin-action-btn admin-edit-btn" data-id="${news.id}" title="تعديل">
+            <button class="admin-action-btn admin-edit-btn" data-id="${newsId}" title="تعديل">
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
               تعديل
             </button>
-            <a href="category.html?cat=${encodeURIComponent(news.category)}" class="admin-action-btn admin-view-btn" title="عرض التصنيف" target="_blank">
+            <a href="article.html?id=${encodeURIComponent(newsId)}" class="admin-action-btn admin-view-btn" title="عرض المقال" target="_blank">
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
               عرض
             </a>
-            <button class="admin-action-btn admin-delete-btn" data-id="${news.id}" title="حذف">
+            <button class="admin-action-btn admin-delete-btn" data-id="${newsId}" title="حذف">
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="m19 6-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
               حذف
             </button>
           </div>
         </div>`;
-      item.querySelector('.admin-edit-btn')?.setAttribute('data-id', getNewsId(news));
-      item.querySelector('.admin-delete-btn')?.setAttribute('data-id', getNewsId(news));
+
       newsFeed.appendChild(item);
     });
 
-    // Bind action buttons
+    // ✅ Bind buttons بعد إضافة الـ DOM
     newsFeed.querySelectorAll('.admin-edit-btn').forEach(btn => {
       btn.addEventListener('click', () => loadForEdit(btn.dataset.id));
     });
@@ -476,7 +529,6 @@
     renderNewsFeed();
   }
 
-  /* ---- Filter change ---- */
   filterSelect?.addEventListener('change', renderNewsFeed);
 
   renderAll();
