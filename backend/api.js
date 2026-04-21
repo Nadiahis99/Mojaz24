@@ -1,19 +1,35 @@
 /**
  * مُوجز 24 — API Client
- * يستبدل localStorage بـ REST API على الباك إند
- * استخدامه مطابق لـ MojazNewsStore و MojazAuth
+ * تم التعديل لإرسال بيانات الجلسة في الهيدر لضمان الأمان
  */
 
 const MojazAPI = (() => {
   const BASE = window.location.origin;
 
+  // دالة جلب الجلسة محلياً (نستخدمها داخل الـ request)
+  function getSession() {
+    try {
+      const raw = sessionStorage.getItem('mojaz24-session');
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
   async function request(method, path, body) {
+    const session = getSession(); // جلب بيانات المستخدم المسجل حالياً
+    
     const opts = {
       method,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 
+        'Content-Type': 'application/json',
+        // إرسال الهيدر المطلوب للباك اند للتحقق من الصلاحيات
+        'x-user-session': session ? JSON.stringify(session) : ''
+      }
     };
+
     if (body) opts.body = JSON.stringify(body);
+
     const res = await fetch(BASE + path, opts);
+
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.message || `HTTP ${res.status}`);
@@ -26,7 +42,9 @@ const MojazAPI = (() => {
   async function login(username, password) {
     try {
       const data = await request('POST', '/auth/login', { username, password });
-      if (data.success) sessionStorage.setItem('mojaz24-session', JSON.stringify(data.session));
+      if (data.success) {
+        sessionStorage.setItem('mojaz24-session', JSON.stringify(data.session));
+      }
       return data;
     } catch (e) {
       return { success: false, message: e.message };
@@ -38,18 +56,15 @@ const MojazAPI = (() => {
     window.location.href = 'login.html';
   }
 
-  function getSession() {
-    try {
-      const raw = sessionStorage.getItem('mojaz24-session');
-      return raw ? JSON.parse(raw) : null;
-    } catch { return null; }
-  }
-
   function isLoggedIn()  { return !!getSession(); }
   function canWrite()    { const s = getSession(); return s && (s.role === 'admin' || s.role === 'journalist'); }
   function isAdmin()     { const s = getSession(); return s && s.role === 'admin'; }
+
   function requireAuth(redirect) {
-    if (!isLoggedIn()) { window.location.href = redirect || 'login.html'; return false; }
+    if (!isLoggedIn()) { 
+      window.location.href = redirect || 'login.html'; 
+      return false; 
+    }
     return true;
   }
 
